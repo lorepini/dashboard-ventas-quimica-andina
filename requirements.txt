@@ -1,0 +1,11 @@
+# Librerias que necesita el dashboard. Se instalan solas la primera vez
+# que se abre "Abrir Dashboard.bat".
+
+streamlit
+pandas
+plotly
+
+# Lectura de los reporteadores. Los archivos llegan en .xls (formato antiguo),
+# que solo lee xlrd; openpyxl queda por si algun dia llegan en .xlsx.
+xlrd>=2.0
+openpyxl

@@ -1,0 +1,13 @@
+# Tema visual de la aplicacion: verde, blanco, negro, amarillo y gris.
+[theme]
+primaryColor = "#2E6B32"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F5F2"
+textColor = "#14150F"
+font = "sans serif"
+
+[server]
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false

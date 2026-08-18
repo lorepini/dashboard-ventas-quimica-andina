@@ -1,0 +1,27 @@
+# --- DATOS CONFIDENCIALES: nunca deben subirse al repositorio ---
+*.xls
+*.xlsx
+*.xlsm
+*.csv
+RV_*/
+reportes/
+datos/
+
+# Claves de acceso
+.streamlit/secrets.toml
+secrets.toml
+
+# Metas guardadas (informacion comercial de la empresa)
+config/metas.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
