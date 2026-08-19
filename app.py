@@ -228,9 +228,12 @@ def main() -> None:
 
     encabezado = st.container()
     with encabezado:
-        izq, der = st.columns([3, 1])
+        izq, medio, der = st.columns([3, 1, 1])
         izq.title("Dashboard de Ventas")
-        der.metric("Datos actualizados al", corte.strftime("%d/%m/%Y"))
+        medio.metric("Datos actualizados al", corte.strftime("%d/%m/%Y"))
+        with der:
+            st.write("")
+            c.boton_pdf()
         if faltantes:
             st.warning(
                 "Falta subir el reporteador de: " + ", ".join(faltantes) +

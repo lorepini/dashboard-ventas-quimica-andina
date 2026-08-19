@@ -177,6 +177,27 @@ def ventas_mensuales(df: pd.DataFrame, anio: int) -> pd.DataFrame:
     return out
 
 
+def ventas_por_mes_anios(df: pd.DataFrame, anios: list[int]) -> pd.DataFrame:
+    """
+    Venta mes a mes de todos los años pedidos, en formato largo.
+
+    Sirve para comparar contra varios años a la vez, no solo contra el anterior.
+    Devuelve columnas MES, MES NOMBRE, ANIO y VENTA, con los doce meses
+    presentes para cada año aunque no hayan tenido movimiento.
+    """
+    filas = []
+    for a in anios:
+        serie = (
+            df[df["ANIO"] == a].groupby("MES")["VENTA"].sum().reindex(range(1, 13), fill_value=0.0)
+        )
+        for mes, valor in serie.items():
+            filas.append({"MES": mes, "ANIO": int(a), "VENTA": float(valor)})
+    out = pd.DataFrame(filas, columns=["MES", "ANIO", "VENTA"])
+    if not out.empty:
+        out["MES NOMBRE"] = out["MES"].map(NOMBRE_MES)
+    return out
+
+
 def ventas_anuales(df: pd.DataFrame) -> pd.DataFrame:
     """Venta total por año, para el historico."""
     out = df.groupby("ANIO", as_index=False)["VENTA"].sum().sort_values("ANIO")
@@ -499,12 +520,19 @@ def generar_alertas(
     corte: pd.Timestamp,
     avance: dict | None = None,
     limite: int = 6,
+    sufijo_ancla: str = "",
 ) -> list[dict]:
     """
     Traduce los indicadores a frases accionables, ordenadas por urgencia.
 
-    Cada alerta tiene 'nivel' (critico / atencion / bueno), 'titulo' y 'detalle'.
+    Cada alerta tiene 'nivel' (critico / atencion / bueno), 'titulo', 'detalle' y,
+    cuando existe una seccion que la desarrolla, un 'ancla' para enlazar hasta
+    ella. El sufijo hace unico cada ancla, porque las cuatro pestañas conviven
+    en la misma pagina y sus identificadores chocarian.
     """
+    def ancla(nombre: str) -> str:
+        return f"{nombre}{sufijo_ancla}"
+
     alertas: list[dict] = []
     kpis = kpis_periodo(df, anio, corte)
     var_venta = kpis["variaciones"]["venta"]
@@ -546,12 +574,14 @@ def generar_alertas(
                 "nivel": "atencion",
                 "titulo": f"Caída de precios resta S/ {abs(pv['efecto_precio']):,.0f}",
                 "detalle": "Los precios promedio bajaron respecto al año anterior en los mismos productos.",
+                "ancla": ancla("preciovolumen"),
             })
         if pv["efecto_volumen"] < 0 and abs(pv["efecto_volumen"]) > pv["venta_anterior"] * 0.02:
             alertas.append({
                 "nivel": "atencion",
                 "titulo": f"Caída de volumen resta S/ {abs(pv['efecto_volumen']):,.0f}",
                 "detalle": "Se están despachando menos unidades que el año pasado.",
+                "ancla": ancla("preciovolumen"),
             })
 
     cartera = estado_cartera(df, anio, corte)
@@ -560,12 +590,14 @@ def generar_alertas(
             "nivel": "critico" if cartera["venta_perdida"] > kpis["actual"]["venta"] * 0.05 else "atencion",
             "titulo": f"{cartera['perdidos']} clientes dejaron de comprar",
             "detalle": f"Compraron S/ {cartera['venta_perdida']:,.0f} en el mismo periodo del año pasado.",
+            "ancla": ancla("perdidos"),
         })
     if cartera["nuevos"]:
         alertas.append({
             "nivel": "bueno",
             "titulo": f"{cartera['nuevos']} clientes nuevos",
             "detalle": f"Aportaron S/ {cartera['venta_nuevos']:,.0f} este periodo.",
+            "ancla": ancla("clientes"),
         })
 
     conc = concentracion(df, anio, corte)
@@ -574,6 +606,7 @@ def generar_alertas(
             "nivel": "atencion",
             "titulo": f"Concentración alta: 5 clientes son el {conc['top5']:.0f}% de la venta",
             "detalle": f"Solo {conc['clientes_80']} clientes explican el 80% del total.",
+            "ancla": ancla("clientes"),
         })
 
     riesgo = clientes_en_riesgo(df, corte, top=100)
@@ -582,7 +615,8 @@ def generar_alertas(
         alertas.append({
             "nivel": "atencion",
             "titulo": f"{len(riesgo)} clientes habituales se están enfriando",
-            "detalle": f"Representan S/ {en_juego:,.0f} en los ultimos 12 meses.",
+            "detalle": f"Representan S/ {en_juego:,.0f} en los últimos 12 meses.",
+            "ancla": ancla("riesgo"),
         })
 
     if kpis["actual"]["pct_notas_credito"] > 3:

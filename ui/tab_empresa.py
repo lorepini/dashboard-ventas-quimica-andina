@@ -123,21 +123,29 @@ def render(df: pd.DataFrame, empresa: str, anio: int, corte: pd.Timestamp) -> No
                 ayuda="Venta dividida entre el número de comprobantes emitidos.",
             )
 
-    alertas = m.generar_alertas(datos, anio, corte, avance, limite=4)
+    alertas = m.generar_alertas(datos, anio, corte, avance, limite=4, sufijo_ancla=f"_{k}")
     if alertas:
         comp.fila_chips(alertas, maximo=4)
 
     # ---------------- Mes a mes + precio/volumen ----------------
     izq, der = st.columns([1, 1], gap="large")
     with izq:
-        comp.titulo_seccion("Mes a mes", f"Barras {anio} · línea gris {anio - 1}")
-        comp.grafico_barras_mensual(
-            m.ventas_mensuales(datos, anio), anio_actual=anio, anio_anterior=anio - 1,
+        comp.titulo_seccion("Mes a mes")
+        disponibles = [a for a in m.anios_disponibles(datos) if a != anio]
+        comparar = st.multiselect(
+            "Comparar contra", disponibles,
+            default=[a for a in [anio - 1] if a in disponibles],
+            key=f"{k}_comparar", label_visibility="collapsed",
+            placeholder="Comparar contra otros años...",
+        )
+        comp.grafico_mes_a_mes(
+            m.ventas_por_mes_anios(datos, [anio] + list(comparar)), anio,
             altura=330, key=f"{k}_mensual",
         )
     with der:
         pv = m.descomposicion_precio_volumen(datos, anio, corte)
-        comp.titulo_seccion("¿Precio o volumen?", _frase_precio_volumen(pv))
+        comp.titulo_seccion("¿Precio o volumen?", _frase_precio_volumen(pv),
+                            ancla=f"preciovolumen_{k}")
         # Solo producto facturado: sin servicios y sin notas de credito, por eso
         # las barras extremas no coinciden con la venta total de la cabecera.
         comp.grafico_cascada(
@@ -151,35 +159,44 @@ def render(df: pd.DataFrame, empresa: str, anio: int, corte: pd.Timestamp) -> No
         comp.nota("Solo venta de producto: excluye servicios y notas de crédito.")
 
     # ---------------- Productos ----------------
+    # Dos graficos arriba y uno ancho abajo: en tres columnas las etiquetas se
+    # amontonaban y ninguno terminaba de leerse.
     productos = m.ranking_productos(datos, anio, corte, top=12)
-    comp.titulo_seccion("Productos")
-    izq, centro, der = st.columns([1.15, 1, 1.15], gap="large")
+    comp.titulo_seccion("Productos", ancla=f"productos_{k}")
+    izq, der = st.columns([1.2, 1], gap="large")
     with izq:
+        st.caption("Cuánto vende cada uno")
         comp.grafico_barras_horizontales(
-            [p[:30] for p in productos["PRODUCTO"]], productos["VENTA"],
-            altura=380, key=f"{k}_prod_barras",
-        )
-    with centro:
-        comp.grafico_treemap(
-            [p[:24] for p in productos["PRODUCTO"]], productos["VENTA"],
-            altura=380, key=f"{k}_prod_treemap",
+            [p[:38] for p in productos["PRODUCTO"]], productos["VENTA"],
+            altura=420, key=f"{k}_prod_barras",
         )
     with der:
-        disp = productos.dropna(subset=["VAR CANTIDAD PCT", "VAR PRECIO PCT"])
-        if len(disp) >= 2:
-            comp.grafico_dispersion(
-                disp["VAR CANTIDAD PCT"].clip(-100, 200),
-                disp["VAR PRECIO PCT"].clip(-100, 200),
-                [p[:26] for p in disp["PRODUCTO"]], tamanos=disp["VENTA"],
-                titulo_x="Cantidad vs año anterior", titulo_y="Precio vs año anterior",
-                altura=380, key=f"{k}_dispersion",
-            )
-            comp.nota("Abajo a la derecha: se vende más pero a menor precio.")
-        else:
-            st.caption("Sin productos comparables contra el año anterior.")
+        st.caption("Peso de cada uno en el total")
+        comp.grafico_treemap(
+            [p[:26] for p in productos["PRODUCTO"]], productos["VENTA"],
+            altura=420, key=f"{k}_prod_treemap",
+        )
+
+    disp = productos.dropna(subset=["VAR CANTIDAD PCT", "VAR PRECIO PCT"])
+    if len(disp) >= 2:
+        st.markdown(f"**Qué le pasó a cada producto frente a {anio - 1}**")
+        st.caption(
+            "Cada burbuja es un producto y su tamaño es cuánto vende. "
+            "Hacia la derecha se despacha más cantidad; hacia arriba se cobra mejor precio."
+        )
+        comp.grafico_dispersion(
+            disp["VAR CANTIDAD PCT"].clip(-100, 200),
+            disp["VAR PRECIO PCT"].clip(-100, 200),
+            [p[:30] for p in disp["PRODUCTO"]], tamanos=disp["VENTA"],
+            titulo_x=f"Cantidad vendida vs {anio - 1}",
+            titulo_y=f"Precio promedio vs {anio - 1}",
+            altura=430, key=f"{k}_dispersion",
+        )
+    else:
+        st.caption("Sin productos comparables contra el año anterior.")
 
     # ---------------- Clientes ----------------
-    comp.titulo_seccion("Clientes")
+    comp.titulo_seccion("Clientes", ancla=f"clientes_{k}")
     cartera = m.estado_cartera(datos, anio, corte)
     conc = m.concentracion(datos, anio, corte)
 
@@ -219,42 +236,61 @@ def render(df: pd.DataFrame, empresa: str, anio: int, corte: pd.Timestamp) -> No
             "CLIENTE", "VENTA", "ACUMULADO", altura=380, key=f"{k}_pareto",
         )
     with der:
+        # Dos graficos con escala propia en vez de uno divergente: las subidas
+        # son de otro orden de magnitud que las caidas y, juntas, estas ultimas
+        # quedaban como lineas sin etiqueta legible.
         variaciones = m.variaciones_clientes(datos, anio, corte, top=6)
-        movimiento = pd.concat([variaciones["suben"], variaciones["bajan"]])
-        if not movimiento.empty:
-            movimiento = movimiento.sort_values("VARIACION", ascending=False)
+        suben, bajan = variaciones["suben"], variaciones["bajan"]
+        if not suben.empty:
+            st.caption(f"Los que más crecieron vs {anio - 1}")
             comp.grafico_barras_variacion(
-                [c[:26] for c in movimiento["CLIENTE"]], movimiento["VARIACION"],
-                altura=380, key=f"{k}_movimiento",
+                [c[:26] for c in suben["CLIENTE"]], suben["VARIACION"],
+                altura=190, key=f"{k}_suben",
             )
-            comp.nota(f"Quién subió y quién bajó en soles, vs {anio - 1}.")
+        if not bajan.empty:
+            st.caption(f"Los que más cayeron vs {anio - 1}")
+            comp.grafico_barras_variacion(
+                [c[:26] for c in bajan["CLIENTE"]], bajan["VARIACION"].abs() * -1,
+                altura=190, key=f"{k}_bajan",
+            )
+        if suben.empty and bajan.empty:
+            st.caption("Sin movimientos comparables contra el año anterior.")
 
     # ---------------- Listas accionables ----------------
     izq, der = st.columns(2, gap="large")
     with izq:
-        comp.titulo_seccion("Se están enfriando", "Contra el ritmo propio de cada cliente")
+        comp.titulo_seccion("Se están enfriando", "Contra el ritmo propio de cada cliente",
+                            ancla=f"riesgo_{k}")
         riesgo = m.clientes_en_riesgo(datos, corte, top=12)
         if riesgo.empty:
             st.caption("Ningún cliente habitual está retrasado.")
         else:
+            # Encabezados cortos: los nombres largos obligaban a desplazar la
+            # tabla en horizontal para ver las ultimas columnas.
+            vista = riesgo[["CLIENTE", "ULTIMA COMPRA", "DIAS SIN COMPRAR",
+                            "RITMO HABITUAL (DIAS)", "VENTA 12M"]].rename(columns={
+                "ULTIMA COMPRA": "ÚLTIMA", "DIAS SIN COMPRAR": "DÍAS SIN",
+                "RITMO HABITUAL (DIAS)": "SU RITMO", "VENTA 12M": "VENTA 12 MESES"})
             comp.tabla(
-                riesgo[["CLIENTE", "ULTIMA COMPRA", "DIAS SIN COMPRAR",
-                        "RITMO HABITUAL (DIAS)", "VENTA 12M"]],
-                formatos={"ULTIMA COMPRA": "fecha", "DIAS SIN COMPRAR": "entero",
-                          "RITMO HABITUAL (DIAS)": "entero", "VENTA 12M": "soles"},
-                alinear_izquierda=["CLIENTE"],
+                vista,
+                formatos={"ÚLTIMA": "fecha", "DÍAS SIN": "entero",
+                          "SU RITMO": "entero", "VENTA 12 MESES": "soles"},
             )
     with der:
-        comp.titulo_seccion("Dejaron de comprar", f"Compraban en {anio - 1}, este año no")
+        comp.titulo_seccion("Dejaron de comprar", f"Compraban en {anio - 1}, este año no",
+                            ancla=f"perdidos_{k}")
         perdidos = m.detalle_clientes_perdidos(datos, anio, corte, top=12)
         if perdidos.empty:
             st.caption("Ningún cliente del año pasado dejó de comprar.")
         else:
+            vista = perdidos[["CLIENTE", "VENTA ANTERIOR", "ULTIMA COMPRA",
+                              "DIAS SIN COMPRAR"]].rename(columns={
+                "VENTA ANTERIOR": f"COMPRÓ EN {anio - 1}", "ULTIMA COMPRA": "ÚLTIMA",
+                "DIAS SIN COMPRAR": "DÍAS SIN"})
             comp.tabla(
-                perdidos[["CLIENTE", "VENTA ANTERIOR", "ULTIMA COMPRA", "DIAS SIN COMPRAR"]],
-                formatos={"VENTA ANTERIOR": "soles", "ULTIMA COMPRA": "fecha",
-                          "DIAS SIN COMPRAR": "entero"},
-                alinear_izquierda=["CLIENTE"],
+                vista,
+                formatos={f"COMPRÓ EN {anio - 1}": "soles", "ÚLTIMA": "fecha",
+                          "DÍAS SIN": "entero"},
             )
 
     # ---------------- Estacionalidad y detalle ----------------

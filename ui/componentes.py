@@ -160,6 +160,25 @@ def aplicar_estilos() -> None:
         .chip-atencion {{ background: {PALETA['amarillo_fondo']}; color: #7A5600; }}
         .chip-bueno {{ background: {PALETA['verde_fondo']}; color: {PALETA['verde_oscuro']}; }}
         .chip .cifra {{ font-weight: 800; }}
+        /* Las alertas que llevan a una seccion se ven y se sienten clicables */
+        a.chip-link {{ text-decoration: none; cursor: pointer;
+            transition: filter .12s ease, transform .12s ease; }}
+        a.chip-link:hover {{ filter: brightness(0.94); transform: translateY(-1px); }}
+        a.chip-link .flecha {{ margin-left: 0.4rem; font-weight: 800; opacity: 0.65; }}
+        /* Al saltar a una seccion, que su titulo no quede pegado al borde */
+        .seccion {{ scroll-margin-top: 4.5rem; }}
+
+        /* --- Impresion / PDF --- */
+        @media print {{
+            [data-testid="stSidebar"], [data-testid="stToolbar"],
+            [data-testid="stHeader"], .stTabs [data-baseweb="tab-list"],
+            .no-imprimir {{ display: none !important; }}
+            .block-container {{ padding: 0 !important; max-width: 100% !important; }}
+            .seccion {{ break-inside: avoid; page-break-inside: avoid; }}
+            .kpi {{ break-inside: avoid; }}
+            .stPlotlyChart {{ break-inside: avoid; page-break-inside: avoid; }}
+            a.chip-link .flecha {{ display: none; }}
+        }}
 
         /* --- Tablas --- */
         table.t {{ border-collapse: collapse; width: 100%; font-size: 0.92rem; }}
@@ -240,11 +259,18 @@ def formato_valor(valor, tipo: str = "texto", decimales: int | None = None) -> s
 # Bloques
 # ---------------------------------------------------------------------------
 
-def titulo_seccion(titulo: str, descripcion: str | None = None) -> None:
-    """Encabezado de sección: regla fina y, como mucho, una línea breve."""
+def titulo_seccion(titulo: str, descripcion: str | None = None,
+                   ancla: str | None = None) -> None:
+    """
+    Encabezado de sección: regla fina y, como mucho, una línea breve.
+
+    `ancla` le pone un identificador para que las alertas de arriba puedan
+    enlazar directamente a esta sección.
+    """
     desc = f'<div class="desc">{html.escape(descripcion)}</div>' if descripcion else ""
+    ident = f' id="{html.escape(ancla)}"' if ancla else ""
     st.markdown(
-        f'<div class="seccion"><h3>{html.escape(titulo)}</h3>{desc}</div>',
+        f'<div class="seccion"{ident}><h3>{html.escape(titulo)}</h3>{desc}</div>',
         unsafe_allow_html=True,
     )
 
@@ -341,16 +367,30 @@ def insignia_semaforo(cumplimiento_pct: float | None, sufijo: str | None = None)
 
 
 def fila_chips(alertas: list[dict], maximo: int = 4) -> None:
-    """Alertas como píldoras cortas en una fila. El detalle largo va en el tooltip."""
+    """
+    Alertas como píldoras cortas en una fila. El detalle largo va en el tooltip.
+
+    Cuando la alerta trae un 'ancla', la píldora se vuelve un enlace que baja a
+    la sección donde está el detalle: quien lee "32 clientes se están enfriando"
+    quiere ver cuáles, y el salto se lo da con un clic.
+    """
     if not alertas:
         return
     piezas = []
     for a in alertas[:maximo]:
-        clase = {"critico": "chip-critico", "atencion": "chip-atencion"}.get(a["nivel"], "chip-bueno")
-        piezas.append(
-            f'<span class="chip {clase}" title="{html.escape(a.get("detalle", ""))}">'
-            f'{html.escape(a["titulo"])}</span>'
-        )
+        clase = {"critico": "chip-critico", "atencion": "chip-atencion"}.get(
+            a["nivel"], "chip-bueno")
+        detalle = html.escape(a.get("detalle", ""))
+        texto = html.escape(a["titulo"])
+        ancla = a.get("ancla")
+        if ancla:
+            piezas.append(
+                f'<a class="chip {clase} chip-link" href="#{html.escape(ancla)}" '
+                f'title="{detalle} — clic para ver el detalle">{texto}<span '
+                f'class="flecha">→</span></a>'
+            )
+        else:
+            piezas.append(f'<span class="chip {clase}" title="{detalle}">{texto}</span>')
     st.markdown("".join(piezas), unsafe_allow_html=True)
 
 
@@ -386,6 +426,7 @@ def _tema(fig: go.Figure, altura: int | None = None, margen: dict | None = None)
         font=dict(family=TIPOGRAFIA, size=13, color=PALETA["texto"]),
         margin=margen or dict(l=8, r=8, t=28, b=8),
         showlegend=False,
+        dragmode=False,
         hoverlabel=dict(bgcolor=PALETA["texto"], font=dict(color="#FFFFFF", size=12)),
     )
     if altura:
@@ -398,11 +439,21 @@ def _tema(fig: go.Figure, altura: int | None = None, margen: dict | None = None)
     return fig
 
 
+# Arrastrar sobre un grafico hacia zoom sin dejar forma de deshacerlo, porque
+# la barra de herramientas esta oculta. Se desactiva el zoom y se conserva el
+# hover, que es lo unico que el usuario necesita.
+CONFIG_GRAFICO = {
+    "displayModeBar": False,
+    "scrollZoom": False,
+    "doubleClick": False,
+    "displaylogo": False,
+}
+
+
 def _mostrar(fig: go.Figure, prefijo: str, key: str | None, devolver: bool = False):
     if devolver:
         return fig
-    st.plotly_chart(fig, width='stretch',
-                    config={"displayModeBar": False}, key=_clave(prefijo, key))
+    st.plotly_chart(fig, width='stretch', config=CONFIG_GRAFICO, key=_clave(prefijo, key))
     return None
 
 
@@ -487,6 +538,54 @@ def grafico_barras_mensual(datos: pd.DataFrame, titulo: str | None = None,
     return _mostrar(fig, "mensual", key, devolver)
 
 
+def grafico_mes_a_mes(datos: pd.DataFrame, anio_principal: int, titulo: str | None = None,
+                      altura: int = 340, key: str | None = None, devolver: bool = False):
+    """
+    Compara varios años mes a mes.
+
+    El año principal va en barras verdes y los demas en lineas, del mas reciente
+    al mas antiguo con tonos cada vez mas claros, para que el orden temporal se
+    lea sin necesidad de mirar la leyenda.
+
+    `datos` es lo que devuelve `metrics.ventas_por_mes_anios`.
+    """
+    fig = go.Figure()
+    comparados = sorted([a for a in datos["ANIO"].unique() if a != anio_principal], reverse=True)
+    # Grises de mas oscuro a mas claro segun se retrocede en el tiempo. Se evita
+    # el negro puro: compite con las barras y le roba protagonismo al año actual.
+    tonos = [PALETA["texto_suave"], PALETA["gris"], PALETA["gris_claro"],
+             PALETA["verde_claro"], PALETA["verde_oscuro"]]
+
+    principal = datos[datos["ANIO"] == anio_principal].sort_values("MES")
+    if not principal.empty:
+        fig.add_trace(go.Bar(
+            x=principal["MES NOMBRE"], y=principal["VENTA"], marker_color=PALETA["verde"],
+            name=str(anio_principal),
+            text=[soles_corto(v) if v else "" for v in principal["VENTA"]],
+            textposition="outside", textfont=dict(size=10, color=PALETA["texto_suave"]),
+            hovertemplate="%{x} " + str(anio_principal) + ": S/ %{y:,.0f}<extra></extra>",
+        ))
+
+    for i, a in enumerate(comparados):
+        serie = datos[datos["ANIO"] == a].sort_values("MES")
+        fig.add_trace(go.Scatter(
+            x=serie["MES NOMBRE"], y=serie["VENTA"], mode="lines+markers", name=str(a),
+            line=dict(color=tonos[i % len(tonos)], width=2,
+                      dash="solid" if i == 0 else "dot"),
+            marker=dict(size=5),
+            hovertemplate="%{x} " + str(a) + ": S/ %{y:,.0f}<extra></extra>",
+        ))
+
+    if titulo:
+        fig.update_layout(title=dict(text=titulo, font=dict(size=14)))
+    fig = _tema(fig, altura, margen=dict(l=8, r=8, t=28 if titulo else 8, b=44))
+    # Con varios años comparados la leyenda deja de ser redundante.
+    fig.update_layout(showlegend=len(comparados) > 0,
+                      legend=dict(orientation="h", y=-0.16, x=0, font=dict(size=11)))
+    fig.update_yaxes(showticklabels=False)
+    return _mostrar(fig, "mesames", key, devolver)
+
+
 def grafico_barras_horizontales(etiquetas, valores, colores=None, titulo: str | None = None,
                                 altura: int | None = None, key: str | None = None,
                                 devolver: bool = False):
@@ -501,7 +600,7 @@ def grafico_barras_horizontales(etiquetas, valores, colores=None, titulo: str | 
     ))
     if titulo:
         fig.update_layout(title=dict(text=titulo, font=dict(size=14)))
-    fig = _tema(fig, altura, margen=dict(l=8, r=60, t=28 if titulo else 8, b=8))
+    fig = _tema(fig, altura, margen=dict(l=8, r=96, t=28 if titulo else 8, b=8))
     fig.update_xaxes(showticklabels=False, showgrid=False)
     fig.update_yaxes(autorange="reversed", showgrid=False)
     return _mostrar(fig, "barrash", key, devolver)
@@ -562,17 +661,28 @@ def grafico_barras_variacion(etiquetas, valores, titulo: str | None = None,
     """Barras divergentes: verde lo que sube, amarillo lo que baja."""
     valores = list(valores)
     altura = altura or max(180, 32 * len(valores) + 60)
-    colores = [PALETA["verde"] if v >= 0 else PALETA["amarillo"] for v in valores]
+
+    # Cuando todas las barras van en el mismo sentido se dibuja la magnitud y el
+    # color indica el signo: asi las etiquetas caben afuera, a la derecha, en vez
+    # de amontonarse contra los nombres.
+    todas_negativas = bool(valores) and all(v < 0 for v in valores)
+    magnitudes = [abs(v) for v in valores] if todas_negativas else valores
+    colores = ([PALETA["amarillo"]] * len(valores) if todas_negativas
+               else [PALETA["verde"] if v >= 0 else PALETA["amarillo"] for v in valores])
+
     fig = go.Figure(go.Bar(
-        x=valores, y=list(etiquetas), orientation="h", marker_color=colores,
+        x=magnitudes, y=list(etiquetas), orientation="h", marker_color=colores,
         text=[soles_corto(v) for v in valores],
         textposition="outside", textfont=dict(size=11, color=PALETA["texto_suave"]),
-        hovertemplate="%{y}: S/ %{x:,.0f}<extra></extra>",
+        cliponaxis=False,
+        customdata=valores,
+        hovertemplate="%{y}: S/ %{customdata:,.0f}<extra></extra>",
     ))
     if titulo:
         fig.update_layout(title=dict(text=titulo, font=dict(size=14)))
-    fig = _tema(fig, altura, margen=dict(l=8, r=70, t=28 if titulo else 8, b=8))
-    fig.add_vline(x=0, line=dict(color=PALETA["borde"], width=1))
+    fig = _tema(fig, altura, margen=dict(l=8, r=96, t=28 if titulo else 8, b=8))
+    if not todas_negativas:
+        fig.add_vline(x=0, line=dict(color=PALETA["borde"], width=1))
     fig.update_xaxes(showticklabels=False, showgrid=False)
     fig.update_yaxes(autorange="reversed", showgrid=False)
     return _mostrar(fig, "variacion", key, devolver)
@@ -617,10 +727,12 @@ def grafico_treemap(etiquetas, valores, titulo: str | None = None, altura: int =
 
 def grafico_dispersion(x, y, etiquetas, tamanos=None, titulo: str | None = None,
                        titulo_x: str = "", titulo_y: str = "", altura: int = 380,
-                       key: str | None = None, devolver: bool = False):
+                       cuadrantes: bool = True, key: str | None = None,
+                       devolver: bool = False):
     """
-    Dispersión con cuadrantes. Pensada para precio contra volumen: los puntos
-    abajo a la derecha son los que crecen en cantidad perdiendo precio.
+    Dispersión con cuadrantes rotulados. Pensada para precio contra volumen:
+    cada burbuja es un producto, su tamaño es cuánto vende, y la esquina en la
+    que cae dice qué le está pasando.
     """
     x, y = list(x), list(y)
     colores = [PALETA["verde"] if (a or 0) >= 0 and (b or 0) >= 0
@@ -636,15 +748,46 @@ def grafico_dispersion(x, y, etiquetas, tamanos=None, titulo: str | None = None,
                     line=dict(color="#FFFFFF", width=1.5)),
         hovertemplate="%{text}<br>Cantidad: %{x:+.1f}%<br>Precio: %{y:+.1f}%<extra></extra>",
     ))
-    fig.add_hline(y=0, line=dict(color=PALETA["borde"], width=1.5))
-    fig.add_vline(x=0, line=dict(color=PALETA["borde"], width=1.5))
+    fig.add_hline(y=0, line=dict(color=PALETA["texto_suave"], width=1.5))
+    fig.add_vline(x=0, line=dict(color=PALETA["texto_suave"], width=1.5))
+
+    # Sin los cuadrantes rotulados el grafico no se entiende solo: hay que
+    # deducir que significa cada esquina. Con el rotulo se lee de inmediato.
+    if cuadrantes:
+        # El rango se ajusta a los datos reales en vez de forzarse simetrico: con
+        # un solo producto extremo, la simetria dejaba a todos los demas
+        # apretados contra el centro.
+        def limites(valores, holgura, minimo):
+            bajo, alto = min(valores, default=0), max(valores, default=0)
+            bajo, alto = min(bajo, 0), max(alto, 0)
+            margen = max((alto - bajo) * holgura, minimo)
+            return bajo - margen, alto + margen
+
+        x0, x1 = limites(x, 0.14, 8)
+        y0, y1 = limites(y, 0.22, 5)
+        # Los rotulos se anclan hacia adentro del area: puestos justo sobre el
+        # borde se cortaban arriba y chocaban con los numeros del eje abajo.
+        dx = (x1 - x0) * 0.015
+        esquinas = [
+            (x1 - dx, y1, "arriba", "Más cantidad<br>y mejor precio", "right", PALETA["verde"]),
+            (x0 + dx, y1, "arriba", "Menos cantidad<br>pero mejor precio", "left", PALETA["texto_suave"]),
+            (x1 - dx, y0, "abajo", "Más cantidad<br>pero precio más bajo", "right", PALETA["amarillo"]),
+            (x0 + dx, y0, "abajo", "Menos cantidad<br>y precio más bajo", "left", PALETA["amarillo"]),
+        ]
+        for px, py, lado, texto, anclaje, color in esquinas:
+            fig.add_annotation(x=px, y=py, text=texto, showarrow=False, xanchor=anclaje,
+                               yanchor="top" if lado == "arriba" else "bottom",
+                               font=dict(size=10, color=color), opacity=0.9, align=anclaje)
+        fig.update_xaxes(range=[x0, x1])
+        fig.update_yaxes(range=[y0, y1])
+
     if titulo:
         fig.update_layout(title=dict(text=titulo, font=dict(size=14)))
-    fig = _tema(fig, altura, margen=dict(l=8, r=8, t=28 if titulo else 8, b=32))
+    fig = _tema(fig, altura, margen=dict(l=8, r=8, t=28 if titulo else 8, b=40))
     fig.update_xaxes(title=dict(text=titulo_x, font=dict(size=11, color=PALETA["texto_suave"])),
-                     ticksuffix="%", showgrid=True, gridcolor=PALETA["fondo_suave"])
+                     ticksuffix="%", showgrid=False)
     fig.update_yaxes(title=dict(text=titulo_y, font=dict(size=11, color=PALETA["texto_suave"])),
-                     ticksuffix="%")
+                     ticksuffix="%", showgrid=False)
     return _mostrar(fig, "dispersion", key, devolver)
 
 
@@ -692,45 +835,82 @@ def grafico_barras_apiladas(categorias, series: dict, titulo: str | None = None,
 # Tablas
 # ---------------------------------------------------------------------------
 
+def _estilizar(df: pd.DataFrame, formatos: dict | None, resaltar: list | None):
+    """Aplica formatos y el verde/amarillo de las columnas con signo."""
+    formatos = formatos or {}
+    resaltar = [c for c in (resaltar or []) if c in df.columns]
+
+    estilo = df.style.format(
+        {col: (lambda v, t=tipo: formato_valor(v, t)) for col, tipo in formatos.items()
+         if col in df.columns}
+    )
+    if resaltar:
+        estilo = estilo.map(
+            lambda v: (f"color: {PALETA['verde']}; font-weight: 700"
+                       if isinstance(v, (int, float)) and pd.notna(v) and v >= 0
+                       else (f"color: {PALETA['amarillo']}; font-weight: 700"
+                             if isinstance(v, (int, float)) and pd.notna(v) else "")),
+            subset=resaltar,
+        )
+    return estilo
+
+
 def tabla(df: pd.DataFrame, formatos: dict | None = None, resaltar: list | None = None,
-          alinear_izquierda: list | None = None) -> None:
+          alinear_izquierda: list | None = None, altura: int | None = None) -> None:
     """
-    Tabla estática y compacta. `formatos` mapea columna -> tipo de `formato_valor`.
+    Tabla de datos. `formatos` mapea columna -> tipo de `formato_valor`.
     `resaltar` son las columnas con signo, que se pintan en verde o amarillo.
+
+    Se usa la tabla nativa para que traiga ordenamiento por columna y el boton
+    de ampliar a pantalla completa que aparece al pasar el mouse por encima.
+    `alinear_izquierda` se acepta por compatibilidad: la alineacion ya es
+    automatica segun el tipo de dato.
     """
     if df is None or df.empty:
         st.caption("Sin datos para este periodo.")
         return
 
-    formatos = formatos or {}
-    resaltar = set(resaltar or [])
-    izquierda = set(alinear_izquierda or [])
+    if altura is None:
+        # Alto justo para las filas que hay, sin dejar un hueco vacio abajo.
+        altura = min(38 * (len(df) + 1) + 4, 460)
 
-    encabezado = "".join(
-        f'<th class="{"izq" if c in izquierda else ""}">{html.escape(str(c))}</th>'
-        for c in df.columns
-    )
-    filas = []
-    for _, fila in df.iterrows():
-        celdas = []
-        for col in df.columns:
-            texto = formato_valor(fila[col], formatos.get(col, "texto"))
-            clase = "izq" if col in izquierda else ""
-            if col in resaltar and pd.notna(fila[col]) and isinstance(fila[col], (int, float)):
-                clase += " pos" if fila[col] >= 0 else " neg"
-            celdas.append(f'<td class="{clase.strip()}">{html.escape(texto)}</td>')
-        filas.append("<tr>" + "".join(celdas) + "</tr>")
-
-    st.markdown(
-        f'<table class="t"><thead><tr>{encabezado}</tr></thead>'
-        f'<tbody>{"".join(filas)}</tbody></table>',
-        unsafe_allow_html=True,
-    )
+    st.dataframe(_estilizar(df, formatos, resaltar), width="stretch",
+                 height=altura, hide_index=True)
 
 
 def tabla_larga(df: pd.DataFrame, formatos: dict | None = None, altura: int = 420) -> None:
-    """Tabla con scroll y ordenable, para el detalle."""
+    """Tabla con scroll, para el detalle largo."""
     if df is None or df.empty:
         st.caption("Sin datos para este periodo.")
         return
-    st.dataframe(df, width='stretch', height=altura, hide_index=True)
+    st.dataframe(_estilizar(df, formatos, None), width='stretch',
+                 height=altura, hide_index=True)
+
+
+def boton_pdf(etiqueta: str = "Descargar vista en PDF") -> None:
+    """
+    Abre el dialogo de impresion del navegador con la vista actual.
+
+    Se usa la impresion del navegador en lugar de generar el archivo en el
+    servidor porque asi el PDF sale exactamente igual a lo que la persona ve en
+    pantalla, incluidos los filtros que tenga puestos. En el dialogo hay que
+    elegir "Guardar como PDF" como destino.
+    """
+    import streamlit.components.v1 as components
+
+    components.html(
+        f"""
+        <style>
+          .btn-pdf {{
+            width: 100%; padding: 0.5rem 0.9rem; cursor: pointer;
+            font-family: {TIPOGRAFIA}; font-size: 0.88rem; font-weight: 650;
+            color: {PALETA['texto']}; background: {PALETA['fondo']};
+            border: 1px solid {PALETA['borde']}; border-radius: 8px;
+          }}
+          .btn-pdf:hover {{ background: {PALETA['verde_fondo']};
+            border-color: {PALETA['verde']}; color: {PALETA['verde_oscuro']}; }}
+        </style>
+        <button class="btn-pdf" onclick="window.parent.print()">{html.escape(etiqueta)}</button>
+        """,
+        height=48,
+    )

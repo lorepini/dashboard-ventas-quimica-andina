@@ -114,12 +114,19 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
                 ayuda="Clientes distintos que compraron en el periodo, contados por RUC.",
             )
 
-    alertas = m.generar_alertas(df, anio, corte, avance, limite=4)
+    alertas = m.generar_alertas(df, anio, corte, avance, limite=4, sufijo_ancla="_grupo")
+    # El resumen no desarrolla todos los temas (el detalle de clientes en riesgo
+    # o de productos vive en cada empresa), asi que se dejan enlazables solo las
+    # alertas que aqui tienen a donde llevar.
+    secciones = {"empresas_grupo", "clientes_grupo", "perdidos_grupo"}
+    for a in alertas:
+        if a.get("ancla") not in secciones:
+            a.pop("ancla", None)
     if alertas:
         comp.fila_chips(alertas, maximo=4)
 
     # ---------------- Las tres empresas ----------------
-    comp.titulo_seccion("Las tres empresas")
+    comp.titulo_seccion("Las tres empresas", ancla="empresas_grupo")
     resumen = m.resumen_por_empresa(df, anio, corte)
     columnas = st.columns(len(resumen), gap="large")
     for col, (_, fila) in zip(columnas, resumen.iterrows()):
@@ -136,9 +143,16 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
     # ---------------- Mes a mes y composición ----------------
     izq, der = st.columns([1.75, 1], gap="large")
     with izq:
-        comp.titulo_seccion("Mes a mes", f"Barras {anio} · línea gris {anio - 1}")
-        comp.grafico_barras_mensual(
-            m.ventas_mensuales(df, anio), anio_actual=anio, anio_anterior=anio - 1,
+        comp.titulo_seccion("Mes a mes")
+        disponibles = [a for a in m.anios_disponibles(df) if a != anio]
+        comparar = st.multiselect(
+            "Comparar contra", disponibles,
+            default=[a for a in [anio - 1] if a in disponibles],
+            key="grupo_comparar", label_visibility="collapsed",
+            placeholder="Comparar contra otros años...",
+        )
+        comp.grafico_mes_a_mes(
+            m.ventas_por_mes_anios(df, [anio] + list(comparar)), anio,
             altura=330, key="grupo_mensual",
         )
     with der:
@@ -154,6 +168,7 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
         comp.titulo_seccion(
             "Concentración de clientes",
             f"{conc['clientes_80']} de {conc['clientes']} clientes son el 80%",
+            ancla="clientes_grupo",
         )
         top = m.pareto_clientes(df, anio, corte, top=10)
         if not top.empty:
@@ -164,7 +179,8 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
                 "CLIENTE", "VENTA", "ACUMULADO", altura=360, key="grupo_pareto",
             )
     with der:
-        comp.titulo_seccion("Histórico", f"{anio} aún incompleto")
+        comp.titulo_seccion("Histórico y cartera", f"{anio} aún incompleto",
+                            ancla="perdidos_grupo")
         comp.grafico_linea_anual(
             m.ventas_anuales(df), altura=250, resaltar_anio=anio, key="grupo_anual",
         )
