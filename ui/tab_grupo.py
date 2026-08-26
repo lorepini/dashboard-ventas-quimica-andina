@@ -15,6 +15,44 @@ from core import metrics as m
 from core.loader import EMPRESAS, ORDEN_EMPRESAS
 
 from . import componentes as comp
+# El margen se lee igual en las dos pantallas: mismos criterios de periodo y de
+# disponibilidad, definidos una sola vez en el detalle de empresa.
+from .tab_empresa import MESES, _fin_margen, _hay_costos, _modulo_costos, _pct
+
+
+def _margen_grupo(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> dict | None:
+    """
+    Margen del grupo y de cada empresa, o None si no hay costos cargados.
+
+    Sin archivo de costos esta función no devuelve nada y la pantalla queda
+    exactamente como estaba.
+    """
+    costos = _modulo_costos()
+    if costos is None or not _hay_costos(df):
+        return None
+    try:
+        kpis = costos.kpis_margen(df, anio, corte)
+        cobertura = costos.cobertura_costos(df, anio, corte)
+    except Exception:
+        return None
+
+    por_empresa: dict[str, float] = {}
+    for empresa in df["EMPRESA"].dropna().unique():
+        sub = df[df["EMPRESA"] == empresa]
+        if not _hay_costos(sub):
+            continue
+        try:
+            por_empresa[empresa] = costos.kpis_margen(sub, anio, corte).get("margen_pct")
+        except Exception:
+            continue
+
+    fin = _fin_margen(kpis, df, corte)
+    return {
+        "pct": kpis.get("margen_pct"),
+        "cobertura": cobertura.get("pct_cobertura"),
+        "mes_fin": MESES[fin.month - 1] if fin is not None else None,
+        "por_empresa": por_empresa,
+    }
 
 
 def _meta_grupo(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> tuple[float, float]:
@@ -94,8 +132,11 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
             comp.tarjeta_kpi("Avance vs meta", "Sin meta",
                              sub="cárgala en la barra lateral")
 
+    margen = _margen_grupo(df, anio, corte)
+
     with der:
-        a, b = st.columns(2)
+        columnas = st.columns(3 if margen else 2)
+        a, b = columnas[0], columnas[1]
         with a:
             proy = m.proyeccion_cierre(df, anio, corte)
             comp.tarjeta_kpi(
@@ -113,6 +154,21 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
                 delta=comp.porcentaje(kpis["variaciones"]["clientes"]),
                 ayuda="Clientes distintos que compraron en el periodo, contados por RUC.",
             )
+        if margen:
+            with columnas[2]:
+                periodo = (f"ene–{margen['mes_fin'][:3]}" if margen["mes_fin"]
+                           else str(anio))
+                cob = margen["cobertura"]
+                comp.tarjeta_kpi(
+                    "Margen del grupo", _pct(margen["pct"]),
+                    sub=(f"{periodo} · sobre {cob:.0f}% de la venta"
+                         if cob is not None else periodo),
+                    ayuda="Margen bruto de fabricación: venta menos costo de producción. "
+                          "NO es utilidad, no descuenta gastos ni fletes. Solo cubre la "
+                          "venta con costo conocido y llega hasta el último mes con "
+                          "costos cargados, antes que la venta. El detalle está en cada "
+                          "empresa.",
+                )
 
     alertas = m.generar_alertas(df, anio, corte, avance, limite=4, sufijo_ancla="_grupo")
     # El resumen no desarrolla todos los temas (el detalle de clientes en riesgo
@@ -132,11 +188,22 @@ def render(df: pd.DataFrame, anio: int, corte: pd.Timestamp) -> None:
     for col, (_, fila) in zip(columnas, resumen.iterrows()):
         with col:
             sub = df[df["EMPRESA"] == fila["EMPRESA"]]
+            detalle = (f"{fila['PARTICIPACION']:.0f}% del grupo · "
+                       f"{int(fila['CLIENTES'])} clientes")
+            # El margen va pegado a la venta: es la única forma de ver de un
+            # vistazo quién vende mucho y gana poco.
+            pct_margen = (margen or {}).get("por_empresa", {}).get(fila["EMPRESA"])
+            ayuda = None
+            if pct_margen is not None and not pd.isna(pct_margen):
+                detalle += f" · margen {pct_margen:.0f}%"
+                ayuda = ("Margen bruto de fabricación sobre la venta con costo conocido, "
+                         "hasta el último mes con costos cargados. No es utilidad.")
             comp.tarjeta_kpi(
                 fila["EMPRESA NOMBRE"],
                 comp.soles_corto(fila["VENTA"]),
                 delta=comp.porcentaje(fila["VARIACION PCT"]),
-                sub=f"{fila['PARTICIPACION']:.0f}% del grupo · {int(fila['CLIENTES'])} clientes",
+                sub=detalle,
+                ayuda=ayuda,
                 mini_grafico=comp.sparkline(_serie_ultimos_meses(sub, corte), altura=44),
             )
 

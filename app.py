@@ -20,6 +20,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from core import auth
+from core import costos as costos_mod
 from core import metas as metas_mod
 from core import metrics as m
 from core.loader import (
@@ -54,25 +55,52 @@ def _procesar(archivos: list[tuple[str, bytes]]) -> tuple[pd.DataFrame, list[dic
     from io import BytesIO
 
     resultados, diagnostico = [], []
+    costos_df = pd.DataFrame()
+
     for nombre, contenido in archivos:
+        # El archivo de costos se reconoce por su estructura, no por su nombre,
+        # asi que da igual como lo bauticen cada mes.
+        try:
+            es_costos = costos_mod.es_archivo_costos(BytesIO(contenido))
+        except Exception:
+            es_costos = False
+
+        if es_costos:
+            try:
+                resultado_costos = costos_mod.cargar_costos(BytesIO(contenido))
+            except Exception as exc:
+                diagnostico.append({"archivo": nombre, "empresa": None,
+                                    "tipo": "costos", "error": str(exc)})
+                continue
+            costos_df = resultado_costos.df
+            diagnostico.append({
+                "archivo": nombre, "empresa": None, "tipo": "costos", "error": None,
+                "filas": resultado_costos.filas_validas,
+                "advertencias": resultado_costos.advertencias,
+            })
+            continue
+
         empresa = detectar_empresa(nombre)
         if empresa is None:
             diagnostico.append({
                 "archivo": nombre,
                 "empresa": None,
+                "tipo": "desconocido",
                 "error": "No se pudo identificar la empresa por el nombre del archivo.",
             })
             continue
         try:
             resultado = cargar_reporteador(BytesIO(contenido), empresa)
         except Exception as exc:  # el mensaje se le muestra al usuario tal cual
-            diagnostico.append({"archivo": nombre, "empresa": empresa, "error": str(exc)})
+            diagnostico.append({"archivo": nombre, "empresa": empresa,
+                                "tipo": "ventas", "error": str(exc)})
             continue
 
         resultados.append(resultado)
         diagnostico.append({
             "archivo": nombre,
             "empresa": empresa,
+            "tipo": "ventas",
             "error": None,
             "filas": resultado.filas_validas,
             "desde": resultado.fecha_min,
@@ -80,7 +108,17 @@ def _procesar(archivos: list[tuple[str, bytes]]) -> tuple[pd.DataFrame, list[dic
             "advertencias": resultado.advertencias,
         })
 
-    return combinar(resultados), diagnostico
+    ventas = combinar(resultados)
+    if not ventas.empty and not costos_df.empty:
+        # Las columnas de margen se agregan aqui una sola vez: las pestañas
+        # detectan su presencia y muestran rentabilidad solo si existen.
+        try:
+            ventas = costos_mod.enriquecer_con_costo(ventas, costos_df)
+        except Exception as exc:
+            diagnostico.append({"archivo": "cruce de costos", "empresa": None,
+                                "tipo": "costos", "error": str(exc)})
+
+    return ventas, diagnostico
 
 
 def _pantalla_carga() -> None:
@@ -92,7 +130,9 @@ def _pantalla_carga() -> None:
     st.info(
         "Arrastra los archivos **REPORTEADOR INDUSTRIAL**, **REPORTEADOR SOCIEDAD MINERA** "
         "y **REPORTEADOR YESO LA LIMEÑA** en el recuadro de la barra lateral. "
-        "La app identifica sola a que empresa corresponde cada uno.",
+        "La app identifica sola a que empresa corresponde cada uno.\n\n"
+        "Si tambien subes el archivo mensual de **costos de produccion**, "
+        "se agrega el margen por producto y por cliente.",
         icon="⬅️",
     )
     st.caption(
@@ -139,10 +179,11 @@ def _pedir_archivos() -> list:
     with st.sidebar:
         st.markdown("### Datos de la semana")
         return st.file_uploader(
-            "Reporteadores (.xls)",
+            "Reporteadores y costos",
             type=["xls", "xlsx"],
             accept_multiple_files=True,
-            help="Puedes subir los tres a la vez.",
+            help="Los tres reporteadores de ventas y, si lo tienes, el archivo "
+                 "mensual de costos de produccion. La app reconoce cual es cual.",
         )
 
 
@@ -221,9 +262,11 @@ def main() -> None:
     corte = m.fecha_corte(df)
 
     cargadas = [d for d in diagnostico if not d["error"]]
+    ventas_cargadas = [d for d in cargadas if d.get("tipo") == "ventas"]
+    hay_costos = any(d.get("tipo") == "costos" for d in cargadas)
     faltantes = [
         EMPRESAS[e]["nombre"] for e in ORDEN_EMPRESAS
-        if e not in {d["empresa"] for d in cargadas}
+        if e not in {d["empresa"] for d in ventas_cargadas}
     ]
 
     encabezado = st.container()
@@ -240,14 +283,21 @@ def main() -> None:
                 ". Las cifras del grupo estan incompletas.",
                 icon="⚠️",
             )
+        if not hay_costos:
+            st.caption(
+                "Sin el archivo de costos no se muestra rentabilidad. "
+                "Subelo junto con los reporteadores para ver el margen."
+            )
     # Los ajustes de limpieza son informacion de respaldo, no de decision:
     # viven en la barra lateral para no gastar espacio en la pantalla principal.
     if any(d.get("advertencias") for d in cargadas):
         with st.sidebar:
             with st.expander("Ajustes aplicados a los datos"):
                 for d in cargadas:
+                    origen = (EMPRESAS[d["empresa"]]["nombre"] if d.get("empresa")
+                              else "Costos")
                     for aviso in d.get("advertencias", []):
-                        st.caption(f"**{EMPRESAS[d['empresa']]['nombre']}**: {aviso}")
+                        st.caption(f"**{origen}**: {aviso}")
 
     nombres = [EMPRESAS[e]["nombre"] for e in ORDEN_EMPRESAS if e in set(df["EMPRESA"])]
     pestanas = st.tabs(["Resumen del Grupo"] + nombres)
